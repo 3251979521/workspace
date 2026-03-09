@@ -5,19 +5,20 @@ import cv2
 from PIL import Image
 import matplotlib.pyplot as plt  # 引入绘图库
 import numpy as np               # 用于生成刻度
+from collections import deque
 
 # load the model and processor
-ckpt = "google/siglip2-base-patch16-naflex"
+ckpt = "facebook/dinov2-base"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 processor = AutoProcessor.from_pretrained(ckpt)
 model = AutoModel.from_pretrained(ckpt).to(device).eval()
 
 def extract_feature(image):
-    inputs = processor(images=[image], return_tensors="pt").to(device)
+    inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
-        image_features = model.get_image_features(**inputs)
+        image_features = model(**inputs)
     # 取均值降维
-    feature = image_features.last_hidden_state.mean(dim=1).squeeze(0)
+    feature = image_features.last_hidden_state.mean(dim=1).squeeze()
     return feature
 
 def surprise(f1, f2):
@@ -25,7 +26,7 @@ def surprise(f1, f2):
     return 1 - cos_sim
 
 ## 视频测试
-cap = cv2.VideoCapture(r"video/2.mp4")
+cap = cv2.VideoCapture(r"video/1.mp4")
 
 if not cap.isOpened():
     print("错误：无法打开视频文件！")
@@ -46,6 +47,8 @@ frame_count = 0
 frame_indices = []
 surprise_scores = []
 
+# 存储过去15帧的信息
+history_features = deque(maxlen=15)
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -57,19 +60,18 @@ while True:
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     feature = extract_feature(img)
 
-    if prev_feature is not None:
-        score = surprise(feature, prev_feature)
+    if len(history_features) == 15:
+        # 和半秒前（最旧的一帧）的画面进行对比
+        old_feature = history_features[0]
+        score = surprise(feature, old_feature)
         val = score.item()
-        print(f"Frame {frame_count} - Surprise: {val:.4f}")
-        
-        # 保存到列表中用于绘图
+        # 记录绘图所需的数据
         frame_indices.append(frame_count)
         surprise_scores.append(val)
-
-        if val > threshold:
-            print("=== CHUNK BOUNDARY ===")
-
-    prev_feature = feature
+        print(f"Frame {frame_count}: Surprise Score = {val:.4f}")
+        # 此时的 val 会比相邻两帧比对大得多，容易触发 threshold
+    
+    history_features.append(feature)
 
 cap.release()
 
