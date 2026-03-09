@@ -20,7 +20,7 @@ def extract_feature(image):
     feature = image_features.last_hidden_state.squeeze(0)
     return feature
 
-def surprise(f1, f2):
+def surprise(f1, f2, patch_num):
     # f1 和 f2 包含了图片各个局部的特征
     # 计算每个对应位置 patch 的余弦相似度，dim=1 表示在特征维度上计算
     cos_sim = F.cosine_similarity(f1, f2, dim=1)
@@ -28,15 +28,16 @@ def surprise(f1, f2):
     # 计算每个 patch 的 surprise
     surprise_per_patch = 1 - cos_sim
 
-    # 取变化最大的前 20% 的 patch 的平均值，避免单个噪点引发误判
-    k = max(1, int(len(surprise_per_patch) * 0.20))
+    # 取变化最大的前 patch_num 的 patch 的平均值，避免单个噪点引发误判
+    k = max(1, int(len(surprise_per_patch) * patch_num))
     topk_surprise, _ = torch.topk(surprise_per_patch, k)
     score = topk_surprise.mean()
     return score
 
 
 ## 视频测试
-cap = cv2.VideoCapture(r"video/1.mp4")
+video = r"video/1.mp4"
+cap = cv2.VideoCapture(video)
 
 if not cap.isOpened():
     print("错误：无法打开视频文件！")
@@ -49,15 +50,18 @@ else:
     print(f"FPS: {fps}, 分辨率: {width}x{height}")
 
 
-
 # 视频开头以第一帧作为anchor_feature
 ret, frame = cap.read()
 img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 feature = extract_feature(img)
 anchor_feature = feature
 
+# 参数设定
 threshold = 0.3
 frame_count = 1
+step = 3 # 新增：设定采样步长
+patch_num = 1 # 设定要平均的patch百分比
+
 # 记录绘图所需的列表
 frame_indices = []
 surprise_scores = []
@@ -71,23 +75,31 @@ while True:
     
     frame_count += 1
 
+    # 新增：跳过不需要计算的帧，只保留 4, 7, 10... (因为第1帧在循环外已处理)
+    if (frame_count - 1) % step != 0:
+        continue
+
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     feature = extract_feature(img)
     next_feature = feature
 
     if next_feature is not None and anchor_feature is not None:
-        score = surprise(next_feature, anchor_feature)
+        score = surprise(next_feature, anchor_feature, patch_num)
         val = score.item()
         print(f"Frame {frame_count} - Surprise: {val:.4f}")
         
-        # 保存到列表中用于绘图
+        # 保存到列表中用于绘图（记录的是实际帧号，保证时间轴准确）
         frame_indices.append(frame_count)
         surprise_scores.append(val)
 
         if val > threshold:
             print("=== CHUNK BOUNDARY ===")
-            # anchor_feature = feature
-    anchor_feature = feature
+            anchor_feature = feature
+            anchor = False
+            
+    # 移动到判断条件外：只有采样帧才会更新 anchor_feature，确保比较对象是上一个采样帧
+    # anchor_feature = feature
+    # anchor = True
 
 cap.release()
 
@@ -122,7 +134,7 @@ if len(frame_indices) > 0:
     
     plt.xlabel('Frames / Time (Seconds)')
     plt.ylabel('Surprise Value')
-    plt.title('Video Surprise Values over Time')
+    plt.title(f'Video Surprise Values over Time (Sampled every {step} frames),{video},{patch_num},anchor:{anchor}')
     plt.legend()
     plt.grid(True, alpha=0.3)
     
