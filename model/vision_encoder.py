@@ -16,16 +16,27 @@ def extract_feature(image):
     inputs = processor(images=[image], return_tensors="pt").to(device)
     with torch.no_grad():
         image_features = model.get_image_features(**inputs)
-    # 取均值降维
-    feature = image_features.last_hidden_state.mean(dim=1).squeeze(0)
+    # 直接返回所有 patch 的特征，形状为 [num_patches, hidden_dim]
+    feature = image_features.last_hidden_state.squeeze(0)
     return feature
 
 def surprise(f1, f2):
-    cos_sim = F.cosine_similarity(f1, f2, dim=0)
-    return 1 - cos_sim
+    # f1 和 f2 包含了图片各个局部的特征
+    # 计算每个对应位置 patch 的余弦相似度，dim=1 表示在特征维度上计算
+    cos_sim = F.cosine_similarity(f1, f2, dim=1)
+
+    # 计算每个 patch 的 surprise
+    surprise_per_patch = 1 - cos_sim
+
+    # 取变化最大的前 20% 的 patch 的平均值，避免单个噪点引发误判
+    k = max(1, int(len(surprise_per_patch) * 0.20))
+    topk_surprise, _ = torch.topk(surprise_per_patch, k)
+    score = topk_surprise.mean()
+    return score
+
 
 ## 视频测试
-cap = cv2.VideoCapture(r"video/2.mp4")
+cap = cv2.VideoCapture(r"video/1.mp4")
 
 if not cap.isOpened():
     print("错误：无法打开视频文件！")
@@ -37,16 +48,22 @@ else:
     height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     print(f"FPS: {fps}, 分辨率: {width}x{height}")
 
-prev_feature = None
-threshold = 0.15
 
-frame_count = 0
 
+# 视频开头以第一帧作为anchor_feature
+ret, frame = cap.read()
+img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+feature = extract_feature(img)
+anchor_feature = feature
+
+threshold = 0.3
+frame_count = 1
 # 记录绘图所需的列表
 frame_indices = []
 surprise_scores = []
 
 while True:
+    # 读取下一帧图像
     ret, frame = cap.read()
     if not ret:
         print(f"读取完毕或失败！总读取帧数: {frame_count}")
@@ -56,9 +73,10 @@ while True:
 
     img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
     feature = extract_feature(img)
+    next_feature = feature
 
-    if prev_feature is not None:
-        score = surprise(feature, prev_feature)
+    if next_feature is not None and anchor_feature is not None:
+        score = surprise(next_feature, anchor_feature)
         val = score.item()
         print(f"Frame {frame_count} - Surprise: {val:.4f}")
         
@@ -68,8 +86,8 @@ while True:
 
         if val > threshold:
             print("=== CHUNK BOUNDARY ===")
-
-    prev_feature = feature
+            # anchor_feature = feature
+    anchor_feature = feature
 
 cap.release()
 
